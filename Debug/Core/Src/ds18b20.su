@@ -1,0 +1,4 @@
+../Core/Src/ds18b20.c:29:15:DS18B20_Init	16	static
+../Core/Src/ds18b20.c:39:6:DS18B20_WriteData	24	static
+../Core/Src/ds18b20.c:57:9:DS18B20_ReadData	16	static
+../Core/Src/ds18b20.c:76:6:DS18B20_ReadTemperature	16	static
