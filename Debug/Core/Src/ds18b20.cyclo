@@ -1,4 +1,0 @@
-../Core/Src/ds18b20.c:29:15:DS18B20_Init	1
-../Core/Src/ds18b20.c:39:6:DS18B20_WriteData	3
-../Core/Src/ds18b20.c:57:9:DS18B20_ReadData	3
-../Core/Src/ds18b20.c:76:6:DS18B20_ReadTemperature	9

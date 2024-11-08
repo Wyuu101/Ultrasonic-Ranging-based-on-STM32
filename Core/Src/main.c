@@ -207,9 +207,9 @@ int main(void)
 	  //软件滤波的缓存值
 	  uint8_t filter_counts = 0;
 	  //如果未超时，就一直循环检测输入捕获寄存器
-	  while(HAL_GetTick()<expireTime){
+	  while(!timeout){
 		  //如果标志位被置位并且计数器未溢出，说明已经捕获到回声，可以跳出循环进行下一步处处理
-		  if(__HAL_TIM_GET_FLAG(&htim4,TIM_FLAG_CC1)&& timeout==0){
+		  if(__HAL_TIM_GET_FLAG(&htim4,TIM_FLAG_CC1)){
 			  filter_counts++;
 			  //如果捕获的次数大于软件滤波阈值，则代表捕获到有效信号
 			  if(filter_counts>=SOFT_FILTER){
@@ -236,7 +236,9 @@ int main(void)
 		  }
 		  OLED_ShowDistance((uint8_t*)distance_msg);
 		  //确保不会使得每次猝发信号的间隔不一致
-		  HAL_Delay(expireTime-HAL_GetTick());
+		  if(HAL_GetTick()<expireTime){
+			  HAL_Delay(expireTime-HAL_GetTick());
+		  }
 	  }
 	  else{
 		  //如果测距不成功，给distance赋默认值，防止灯条误判
