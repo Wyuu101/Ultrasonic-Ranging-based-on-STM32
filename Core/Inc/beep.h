@@ -12,7 +12,8 @@
 #include "tim.h"
 
 #define BEEP_ROUNDS 10
-#define BEEP_FREQUENCY_AUTORELOAD 999
+#define BEEP_FREQUENCY_AUTORELOAD 1131
+extern int beep_too_close;
 extern int beep_rounds;
 extern int beep_interval_rounds;
 extern int beep_interval_rounds_tre;

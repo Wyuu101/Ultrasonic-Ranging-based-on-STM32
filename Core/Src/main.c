@@ -37,6 +37,8 @@
 #include "beep.h"
 #include "iwdg.h"
 #include "math.h"
+#include "queue.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,48 +48,57 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SOFT_FILTER 1	//软件滤波(1即为不启用)
-#define LOOP_INTERVAL 200 //主循环延时，主要体现在OLED刷新率,单位毫秒
+#define SOFT_FILTER 1	//软件滤波(1即为不启动)
+#define LOOP_INTERVAL 63 //主循环延时，主要体现在OLED刷新率和脉冲间隔,单位毫秒
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-//触发定时器更新中断时定时器并不会停止计数，需要手动停止
+//触发定时器更新中断时定时器并不会停止计数，需要手动停停止
+//停止定时器输入捕获并不会停止定时器的计数。
 void  HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	//TIM1用于蜂鸣器发声
 	if(htim == &htim1){
-		if(__HAL_TIM_GET_AUTORELOAD(&htim1)== BEEP_FREQUENCY_AUTORELOAD){
-			//先关闭定时器，以防设置重装初值时跑飞
-			HAL_TIM_Base_Stop_IT(&htim1);
-			if(beep_rounds<BEEP_ROUNDS*2){
-				HAL_GPIO_TogglePin(BEEP_GPIO_Port, BEEP_Pin);
-				beep_rounds++;
-				//继续启动计数器
+		//距离适当
+		if(!beep_too_close){
+			if(__HAL_TIM_GET_AUTORELOAD(&htim1)== BEEP_FREQUENCY_AUTORELOAD){
+				//先关闭定时器中断
+				HAL_TIM_Base_Stop_IT(&htim1);
+				if(beep_rounds<BEEP_ROUNDS*2){
+					HAL_GPIO_TogglePin(BEEP_GPIO_Port, BEEP_Pin);
+					beep_rounds++;
+					//继续启动计数器
+				}
+				else{
+					//如果已完成十次脉冲，就进入延时阶段
+					beep_rounds=0;
+					//设置重复计数寄存器RCR
+					TIM1->RCR = beep_interval_rounds_tre-1;
+					//设置计时器重装初值为3999，这样一次溢出就消耗4ms
+					__HAL_TIM_SET_AUTORELOAD(&htim1,3999);
+				}
 			}
-			else{
-				//如果已完成十次脉冲，就进入延时阶段
-				beep_rounds=0;
-				//设置重复计数寄存器RCR
-				TIM1->RCR = beep_interval_rounds_tre-1;
-				//设置计时器重装初值为1999，这样一次溢出就消耗2ms
-				__HAL_TIM_SET_AUTORELOAD(&htim1,1999);
-				//启动计时器
+			//如果中断产生时，定时器处于的是延时模式，就切换回脉冲
+			else if(__HAL_TIM_GET_AUTORELOAD(&htim1)== 3999){
+				//先关闭定时器，以防设置重装初值时跑飞
+				HAL_TIM_Base_Stop_IT(&htim1);
+				//清零RCR（重复计数寄存器）
+				TIM1->RCR =0;
+				//设置定时器重装值
+				__HAL_TIM_SET_AUTORELOAD(&htim1,BEEP_FREQUENCY_AUTORELOAD);
 			}
 			//设置计数值为0后再重新打开定时器
 			__HAL_TIM_SET_COUNTER(&htim1,0);
+			//启动计时器
 			HAL_TIM_Base_Start_IT(&htim1);
-
 		}
-		//如果中断产生时，定时器处于的是延时模式，就切换回脉冲
-		else if(__HAL_TIM_GET_AUTORELOAD(&htim1)== 1999){
-			//先关闭定时器，以防设置重装初值时跑飞
+		//距离过近，切换为长鸣
+		else{
 			HAL_TIM_Base_Stop_IT(&htim1);
-			//清零RCR（重复计数寄存器）
-			TIM1->RCR =0;
-			//设置定时器重装初值
-			__HAL_TIM_SET_AUTORELOAD(&htim1,BEEP_FREQUENCY_AUTORELOAD);
+			HAL_GPIO_TogglePin(BEEP_GPIO_Port, BEEP_Pin);
 			//设置计数值为0后再重新打开定时器
 			__HAL_TIM_SET_COUNTER(&htim1,0);
+			//启动计时器
 			HAL_TIM_Base_Start_IT(&htim1);
 		}
 	}
@@ -154,11 +165,11 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
-  MX_TIM1_Init();
   MX_TIM4_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_IWDG_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   //初始化OLED
   OLED_Init();
@@ -171,8 +182,8 @@ int main(void)
   OLED_SoundSpeed_Unit();
   //启动IWDG独立看门狗40Khz进行32分频，初值4000，超时时间3.2s
   HAL_IWDG_Init(&hiwdg);
-  //打开TIM4计数器
-  HAL_TIM_Base_Start_IT(&htim4);
+  //初始化一个全局队列，用于数据平滑处理
+  initQueue(&globalQueue);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -188,33 +199,38 @@ int main(void)
 			  HAL_Delay(1000);
 		  }
 	  }
-	  //清空TIM4计数值
+	  //清空TIM4计数器
 	  __HAL_TIM_SET_COUNTER(&htim4,0);
-	  //清零launch_time
-	  launch_time=0;
 	  //测距成功标志位清0
 	  success =0;
 	  //清空ccr1标志位
 	  __HAL_TIM_CLEAR_FLAG(&htim4,TIM_FLAG_CC1);
 	  //复位超时标志位
 	  timeout  = 0;
+	  //赋值一个用于判断超时的时间节点
+	  uint32_t expireTime = HAL_GetTick()+LOOP_INTERVAL;
+	  //软件滤波的缓存
+	  uint8_t filter_counts = 0;
+	  //启动定时器4并打开中断
+	  HAL_TIM_Base_Start_IT(&htim4);
+	  //发射脉冲
+	  Burst_Signal();
+	  //用于屏蔽探头间声波串扰，这将影响雷达死区
+	  //Delay_us(150);
 	  //打开TIM4输入捕获功能，通道1
 	  HAL_TIM_IC_Start(&htim4, TIM_CHANNEL_1);
-	  //开始发射脉冲并记录发射时间
-	  Burst_Signal();
-	  //赋值一个用于判断超时的时间节点，即最大超时时间为50ms
-	  uint32_t expireTime = HAL_GetTick()+LOOP_INTERVAL;
-	  //软件滤波的缓存值
-	  uint8_t filter_counts = 0;
+
 	  //如果未超时，就一直循环检测输入捕获寄存器
 	  while(!timeout){
-		  //如果标志位被置位并且计数器未溢出，说明已经捕获到回声，可以跳出循环进行下一步处处理
+		  //如果标志位被置位并且计数器未溢出，说明已经捕获到回声，可以跳出循环进行下一步处理
 		  if(__HAL_TIM_GET_FLAG(&htim4,TIM_FLAG_CC1)){
 			  filter_counts++;
 			  //如果捕获的次数大于软件滤波阈值，则代表捕获到有效信号
 			  if(filter_counts>=SOFT_FILTER){
-				  //先关闭TIM4定时器
+				  //先关闭TIM4定时器输入捕获
 				  HAL_TIM_IC_Stop(&htim4, TIM_CHANNEL_1);
+				  //再关闭TIM4定时器计数和中断功能
+				  HAL_TIM_Base_Stop_IT(&htim4);
 				  //标记测距成功
 				  success=1;
 				  break;
@@ -223,8 +239,10 @@ int main(void)
 			  __HAL_TIM_CLEAR_FLAG(&htim4,TIM_FLAG_CC1);
 		  }
 	  }
-	  //先关闭TIM4定时器
+	  //先关闭TIM4定时器输入捕获
 	  HAL_TIM_IC_Stop(&htim4, TIM_CHANNEL_1);
+	  //再关闭TIM4定时器计数和中断功能
+	  HAL_TIM_Base_Stop_IT(&htim4);
 	  //如果测距成功，就开始进行距离计算
 	  if(success){
 		  Distance_Caculate();
@@ -235,17 +253,45 @@ int main(void)
 			  sprintf(distance_msg,"%.3f\n",distance);
 		  }
 		  OLED_ShowDistance((uint8_t*)distance_msg);
-		  //确保不会使得每次猝发信号的间隔不一致
+		  //确保每次猝发信号的间隔一致
 		  if(HAL_GetTick()<expireTime){
 			  HAL_Delay(expireTime-HAL_GetTick());
 		  }
 	  }
+	  //如果测距不成功
 	  else{
-		  //如果测距不成功，给distance赋默认值，防止灯条误判
-		  distance =1100;
-		  //在显示屏打印距离过远的文本
-		  OLED_ShowDistance_SoFar();
+		  //如果队列不为空
+		  if(!isQueueEmpty(&globalQueue)){
+			  //如果距离过远出现次数在3次以下，判定为偶然情况，继续显示上一次距离
+			  if(count_toofar<=3){
+				  distance = queueAverage(&globalQueue);
+				  count_toofar++;
+				  if(distance<10){
+					  sprintf(distance_msg,"%.4f\n",distance);
+				  }
+				  else{
+					  sprintf(distance_msg,"%.3f\n",distance);
+				  }
+				  OLED_ShowDistance((uint8_t*)distance_msg);
+			  }
+			  //距离过远次数出现在3次以上，判定为确实超出测量范围
+			  else{
+				  distance =1100;
+				  clearQueue(&globalQueue);
+				  OLED_ShowDistance_SoFar();
+				  count_toofar=0;
+			  }
+		  }
+		  //如果队列为空，直接打印距离过远
+		  else{
+			  //复位距离过远记录次数
+			  count_toofar=0;
+			  distance =1100;
+			  //在显示屏打印距离过远的文字
+			  OLED_ShowDistance_SoFar();
+		  }
 	  }
+
 	  //变换灯条
 	  Change_LightBar();
 	  //变换蜂鸣频率等参数->具体要靠中断
